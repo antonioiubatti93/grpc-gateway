@@ -6,9 +6,9 @@ load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
 # Define before rules_proto, otherwise we receive the version of com_google_protobuf from there
 http_archive(
     name = "com_google_protobuf",
-    sha256 = "3bd7828aa5af4b13b99c191e8b1e884ebfa9ad371b0ce264605d347f135d2568",
-    strip_prefix = "protobuf-3.19.4",
-    urls = ["https://github.com/protocolbuffers/protobuf/archive/v3.19.4.tar.gz"],
+    sha256 = "d7d204a59fd0d2d2387bd362c2155289d5060f32122c4d1d922041b61191d522",
+    strip_prefix = "protobuf-3.21.5",
+    urls = ["https://github.com/protocolbuffers/protobuf/archive/v3.21.5.tar.gz"],
 )
 
 http_archive(
@@ -42,20 +42,18 @@ rules_proto_toolchains()
 
 http_archive(
     name = "io_bazel_rules_go",
-    sha256 = "d6b2513456fe2229811da7eb67a444be7785f5323c6708b38d851d2b51e54d83",
+    sha256 = "16e9fca53ed6bd4ff4ad76facc9b7b651a89db1689a2877d6fd7b82aa824e366",
     urls = [
-        "https://mirror.bazel.build/github.com/bazelbuild/rules_go/releases/download/v0.30.0/rules_go-v0.30.0.zip",
-        "https://github.com/bazelbuild/rules_go/releases/download/v0.30.0/rules_go-v0.30.0.zip",
+        "https://mirror.bazel.build/github.com/bazelbuild/rules_go/releases/download/v0.34.0/rules_go-v0.34.0.zip",
+        "https://github.com/bazelbuild/rules_go/releases/download/v0.34.0/rules_go-v0.34.0.zip",
     ],
 )
 
-# TODO: Revert https://github.com/grpc-ecosystem/grpc-gateway/pull/2578/commits/fb9b59be7f2408767657c83c5002bf700ac7c460 once
-# https://github.com/bazelbuild/bazel-gazelle/pull/1194 is merged
 git_repository(
     name = "bazel_gazelle",
-    commit = "4a1aeae7cab962fd8088f42038d3a477cdca91a5",
-    remote = "https://github.com/johanbrandhorst/bazel-gazelle",
-    shallow_since = "1647116890 +0000",
+    commit = "f377e6eff8e24508feb1a34b1e5e681982482a9f",
+    remote = "https://github.com/bazelbuild/bazel-gazelle",
+    shallow_since = "1648046534 -0400",
 )
 
 load("@io_bazel_rules_go//go:deps.bzl", "go_register_toolchains", "go_rules_dependencies")
@@ -83,9 +81,9 @@ protobuf_deps()
 
 http_archive(
     name = "com_github_bazelbuild_buildtools",
-    sha256 = "7f43df3cca7bb4ea443b4159edd7a204c8d771890a69a50a190dc9543760ca21",
-    strip_prefix = "buildtools-5.0.1",
-    urls = ["https://github.com/bazelbuild/buildtools/archive/5.0.1.tar.gz"],
+    sha256 = "e3bb0dc8b0274ea1aca75f1f8c0c835adbe589708ea89bf698069d0790701ea3",
+    strip_prefix = "buildtools-5.1.0",
+    urls = ["https://github.com/bazelbuild/buildtools/archive/5.1.0.tar.gz"],
 )
 
 load("@com_github_bazelbuild_buildtools//buildifier:deps.bzl", "buildifier_dependencies")

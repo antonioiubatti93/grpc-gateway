@@ -39,6 +39,12 @@ message ABitOfEverything {
             description: "Find out more about ABitOfEverything";
         }
         example: "{\"uuid\": \"0cf361e1-4b44-483d-a159-54dabdf7e814\"}"
+        extensions: {
+            key: "x-irreversible";
+            value {
+                bool_value: true;
+            }
+        }
     };
 
     string uuid = 1 [(grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {description: "The UUID field."}];
@@ -75,6 +81,29 @@ service ABitOfEverythingService {
             }
         };
     }
+}
+```
+
+[Swagger Extensions](https://swagger.io/docs/specification/2-0/swagger-extensions/) can be added as key-value pairs to the options. Keys must begin with `x-` and values can be of any type listed [here](https://developers.google.com/protocol-buffers/docs/reference/google.protobuf#value). For example:
+```
+extensions: {
+  key: "x-amazon-apigateway-authorizer";
+  value {
+    struct_value {
+      fields {
+        key: "type";
+        value {
+          string_value: "token";
+        }
+      }
+      fields {
+        key: "authorizerResultTtlInSeconds";
+        value {
+          number_value: 60;
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -283,7 +312,6 @@ Output json:
     ]
 },
 ```
-{% endraw %}
 
 ### Hiding fields, methods, services and enum values
 
@@ -317,7 +345,7 @@ Note: Annotations are only supported on Services, Methods, Fields and Enum Value
 `opt: visibility_restriction_selectors=PREVIEW` will result in:
 
 Input Example:
-```proto3
+```protobuf
 service Echo {
     rpc EchoInternal(VisibilityRuleSimpleMessage) returns (VisibilityRuleSimpleMessage) {
         option (google.api.method_visibility).restriction = "INTERNAL";
@@ -403,6 +431,57 @@ For a more in depth example see [visibility_rule_echo_service.proto](https://git
 - [`visibility_restriction_selectors=INTERNAL`](https://github.com/grpc-ecosystem/grpc-gateway/blob/master/examples/internal/proto/examplepb/visibility_rule_internal_echo_service.swagger.json)
 - [`visibility_restriction_selectors=INTERNAL,visibility_restriction_selectors=PREVIEW`](https://github.com/grpc-ecosystem/grpc-gateway/blob/master/examples/internal/proto/examplepb/visibility_rule_preview_and_internal_echo_service.swagger.json)
 - [Not set](https://github.com/grpc-ecosystem/grpc-gateway/blob/master/examples/internal/proto/examplepb/visibility_rule_none_echo_service.swagger.json)
+
+### Path parameters
+
+When defining HTTP bindings with path parameters that contain multiple path segments, as suggested by the [Google AIPs](https://google.aip.dev/), the path parameter names are numbered to avoid generating duplicate paths in the OpenAPI file.
+
+For example, consider:
+```protobuf
+service LibraryService {
+  rpc GetShelf(GetShelfRequest) returns (Shelf) {
+    option (google.api.http) = {
+      get: "/v1/{name=shelves/*}"
+    };
+  }
+  rpc GetBook(GetBookRequest) returns (Book) {
+    option (google.api.http) = {
+      get: "/v1/{name=shelves/*/books/*}"
+    };
+  }
+}
+
+message GetShelfRequest {
+  string name = 1;
+}
+
+message GetBookRequest {
+  string name = 1;
+}
+```
+
+This will generate the following paths:
+- `/v1/{name}`
+- `/v1/{name_1}`
+
+To override the path parameter names, annotate the field used as path parameter:
+```protobuf
+message GetShelfRequest {
+  string name = 1 [(grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {field_configuration: {path_param_name: "shelfName"}}];
+}
+message GetBookRequest {
+  string name = 1 [(grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {field_configuration: {path_param_name: "bookName"}}];
+}
+```
+
+This will instead generate the following paths:
+- `/v1/{shelfName}`
+- `/v1/{bookName}`
+
+Note that path parameters in OpenAPI does not support values with `/`, as discussed in
+[Support for path parameters which can contain slashes #892](https://github.com/OAI/OpenAPI-Specification/issues/892),
+so tools as Swagger UI will URL encode any `/` provided as parameter value. A possible workaround for this is to write
+a custom post processor for your OAS file to replace any path parameter with `/` into multiple parameters.
 
 ### Output format
 

@@ -88,18 +88,19 @@ var wktSchemas = map[string]schemaCore{
 	".google.protobuf.BoolValue": {
 		Type: "boolean",
 	},
-	".google.protobuf.Empty": {},
+	".google.protobuf.Empty": {
+		Type: "object",
+	},
 	".google.protobuf.Struct": {
 		Type: "object",
 	},
-	".google.protobuf.Value": {
-		Type: "object",
-	},
+	".google.protobuf.Value": {},
 	".google.protobuf.ListValue": {
 		Type: "array",
-		Items: (*openapiItemsObject)(&schemaCore{
-			Type: "object",
-		}),
+		Items: (*openapiItemsObject)(&openapiSchemaObject{
+			schemaCore: schemaCore{
+				Type: "object",
+			}}),
 	},
 	".google.protobuf.NullValue": {
 		Type: "string",
@@ -273,6 +274,7 @@ func nestedQueryParams(message *descriptor.Message, field *descriptor.Field, pre
 			Format:      schema.Format,
 			Pattern:     schema.Pattern,
 			Required:    required,
+			extensions:  schema.extensions,
 		}
 		if param.Type == "array" {
 			param.CollectionFormat = "multi"
@@ -287,8 +289,10 @@ func nestedQueryParams(message *descriptor.Message, field *descriptor.Field, pre
 			}
 			if items != nil { // array
 				param.Items = &openapiItemsObject{
-					Type: "string",
-					Enum: listEnumNames(reg, enum),
+					schemaCore: schemaCore{
+						Type: "string",
+						Enum: listEnumNames(reg, enum),
+					},
 				}
 				if reg.GetEnumsAsInts() {
 					param.Items.Type = "integer"
@@ -449,6 +453,7 @@ func renderMessageAsDefinition(msg *descriptor.Message, reg *descriptor.Registry
 		schema.MinProperties = protoSchema.MinProperties
 		schema.Required = protoSchema.Required
 		schema.XNullable = protoSchema.XNullable
+		schema.extensions = protoSchema.extensions
 		if protoSchema.schemaCore.Type != "" || protoSchema.schemaCore.Ref != "" {
 			schema.schemaCore = protoSchema.schemaCore
 		}
@@ -683,7 +688,7 @@ func schemaOfField(f *descriptor.Field, reg *descriptor.Registry, refs refMap) o
 		ret = openapiSchemaObject{
 			schemaCore: schemaCore{
 				Type:  "array",
-				Items: (*openapiItemsObject)(&core),
+				Items: (*openapiItemsObject)(&openapiSchemaObject{schemaCore: core}),
 			},
 		}
 	case object:
@@ -859,7 +864,8 @@ func templateToParts(path string, reg *descriptor.Registry, fields []*descriptor
 	depth := 0
 	buffer := ""
 	jsonBuffer := ""
-	for _, char := range path {
+pathLoop:
+	for i, char := range path {
 		switch char {
 		case '{':
 			// Push on the stack
@@ -892,6 +898,16 @@ func templateToParts(path string, reg *descriptor.Registry, fields []*descriptor
 			}
 			buffer += string(char)
 			jsonBuffer += string(char)
+		case ':':
+			if depth == 0 {
+				// As soon as we find a ":" outside a variable,
+				// everything following is a verb
+				parts = append(parts, buffer)
+				buffer = path[i:]
+				break pathLoop
+			}
+			buffer += string(char)
+			jsonBuffer += string(char)
 		default:
 			buffer += string(char)
 			jsonBuffer += string(char)
@@ -909,9 +925,18 @@ func templateToParts(path string, reg *descriptor.Registry, fields []*descriptor
 // For example this would replace the path segment of "{foo=bar/*}" with "{foo}" or "prefix{bang=bash/**}" with "prefix{bang}".
 // OpenAPI 2 only allows simple path parameters with the constraints on that parameter specified in the OpenAPI
 // schema's "pattern" instead of in the path parameter itself.
-func partsToOpenAPIPath(parts []string) string {
+func partsToOpenAPIPath(parts []string, overrides map[string]string) string {
 	for index, part := range parts {
-		parts[index] = canRegexp.ReplaceAllString(part, "{$1}")
+		part = canRegexp.ReplaceAllString(part, "{$1}")
+		if override, ok := overrides[part]; ok {
+			part = override
+		}
+		parts[index] = part
+	}
+	last := len(parts) - 1
+	if strings.HasPrefix(parts[last], ":") {
+		// Last item is a verb (":" LITERAL).
+		return strings.Join(parts[:last], "/") + parts[last]
 	}
 	return strings.Join(parts, "/")
 }
@@ -932,9 +957,14 @@ func partsToOpenAPIPath(parts []string) string {
 // For example "{name=organizations/*/roles/*}" would produce the regular expression for the "name" parameter of
 // "organizations/[^/]+/roles/[^/]+" or "{bar=bing/*/bang/**}" would produce the regular expression for the "bar"
 // parameter of "bing/[^/]+/bang/.+".
+//
+// Note that OpenAPI does not actually support path parameters with "/", see https://github.com/OAI/OpenAPI-Specification/issues/892
 func partsToRegexpMap(parts []string) map[string]string {
 	regExps := make(map[string]string)
 	for _, part := range parts {
+		if strings.Contains(part, "/") {
+			glog.Warningf("Path parameter '%s' contains '/', which is not supported in OpenAPI", part)
+		}
 		if submatch := canRegexp.FindStringSubmatch(part); len(submatch) > 2 {
 			if strings.HasPrefix(submatch[2], "=") { // this part matches the standard and should be made into a regular expression
 				// assume the string's characters other than "**" and "*" are literals (not necessarily a good assumption 100% of the times, but it will support most use cases)
@@ -1010,12 +1040,15 @@ func renderServices(services []*descriptor.Service, paths openapiPathsObject, re
 				parts := templateToParts(b.PathTmpl.Template, reg, meth.RequestType.Fields, msgs)
 				// extract any constraints specified in the path placeholders into ECMA regular expressions
 				pathParamRegexpMap := partsToRegexpMap(parts)
+				// Keep track of path parameter overrides
+				var pathParamNames = make(map[string]string)
 				for _, parameter := range b.PathParams {
 
 					var paramType, paramFormat, desc, collectionFormat, defaultValue string
 					var enumNames []string
 					var items *openapiItemsObject
 					var minItems *int
+					var extensions []extension
 					switch pt := parameter.Target.GetType(); pt {
 					case descriptorpb.FieldDescriptorProto_TYPE_GROUP, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE:
 						if descriptor.IsWellKnownType(parameter.Target.GetTypeName()) {
@@ -1027,6 +1060,7 @@ func renderServices(services []*descriptor.Service, paths openapiPathsObject, re
 							paramFormat = schema.Format
 							desc = schema.Description
 							defaultValue = schema.Default
+							extensions = schema.extensions
 						} else {
 							return fmt.Errorf("only primitive and well-known types are allowed in path parameters")
 						}
@@ -1046,6 +1080,7 @@ func renderServices(services []*descriptor.Service, paths openapiPathsObject, re
 						schema := schemaOfField(parameter.Target, reg, customRefs)
 						desc = schema.Description
 						defaultValue = schema.Default
+						extensions = schema.extensions
 					default:
 						var ok bool
 						paramType, paramFormat, ok = primitiveSchema(pt)
@@ -1056,6 +1091,7 @@ func renderServices(services []*descriptor.Service, paths openapiPathsObject, re
 						schema := schemaOfField(parameter.Target, reg, customRefs)
 						desc = schema.Description
 						defaultValue = schema.Default
+						extensions = schema.extensions
 					}
 
 					if parameter.IsRepeated() {
@@ -1065,7 +1101,7 @@ func renderServices(services []*descriptor.Service, paths openapiPathsObject, re
 							core.Enum = enumNames
 							enumNames = s
 						}
-						items = (*openapiItemsObject)(&core)
+						items = (*openapiItemsObject)(&openapiSchemaObject{schemaCore: core})
 						paramType = "array"
 						paramFormat = ""
 						collectionFormat = reg.GetRepeatedPathParamSeparatorName()
@@ -1084,6 +1120,13 @@ func renderServices(services []*descriptor.Service, paths openapiPathsObject, re
 					if regExp, ok := pathParamRegexpMap[parameterString]; ok {
 						pattern = regExp
 					}
+					if fc := getFieldConfiguration(reg, parameter.Target); fc != nil {
+						pathParamName := fc.GetPathParamName()
+						if pathParamName != "" && pathParamName != parameterString {
+							pathParamNames["{"+parameterString+"}"] = "{" + pathParamName + "}"
+							parameterString = pathParamName
+						}
+					}
 					parameters = append(parameters, openapiParameterObject{
 						Name:        parameterString,
 						Description: desc,
@@ -1098,6 +1141,7 @@ func renderServices(services []*descriptor.Service, paths openapiPathsObject, re
 						CollectionFormat: collectionFormat,
 						MinItems:         minItems,
 						Pattern:          pattern,
+						extensions:       extensions,
 					})
 				}
 				// Now check if there is a body parameter
@@ -1121,17 +1165,18 @@ func renderServices(services []*descriptor.Service, paths openapiPathsObject, re
 								schema.Properties = &openapiSchemaObjectProperties{}
 							}
 						} else {
+							messageSchema, err := renderMessageAsDefinition(meth.RequestType, reg, customRefs, b.PathParams)
+							if err != nil {
+								return err
+							}
 							if len(b.PathParams) == 0 {
-								err := schema.setRefFromFQN(meth.RequestType.FQMN(), reg)
+								err = schema.setRefFromFQN(meth.RequestType.FQMN(), reg)
 								if err != nil {
 									return err
 								}
+								desc = messageSchema.Description
 							} else {
-								var err error
-								schema, err = renderMessageAsDefinition(meth.RequestType, reg, customRefs, b.PathParams)
-								if err != nil {
-									return err
-								}
+								schema = messageSchema
 								if schema.Properties == nil || len(*schema.Properties) == 0 {
 									glog.Warningf("created a body with 0 properties in the message, this might be unintended: %s", *meth.RequestType)
 								}
@@ -1151,7 +1196,7 @@ func renderServices(services []*descriptor.Service, paths openapiPathsObject, re
 							bodyFieldName = bodyField.Name
 						}
 						// Align pathParams with body field path.
-						pathParams := subPathParams(bodyFieldName, b.PathParams)
+						pathParams := subPathParams(bodyField.Name, b.PathParams)
 						var err error
 						schema, err = renderFieldAsDefinition(bodyField.Target, reg, customRefs, pathParams)
 						if err != nil {
@@ -1183,7 +1228,7 @@ func renderServices(services []*descriptor.Service, paths openapiPathsObject, re
 				}
 				parameters = append(parameters, queryParams...)
 
-				path := partsToOpenAPIPath(parts)
+				path := partsToOpenAPIPath(parts, pathParamNames)
 				pathItemObject, ok := paths[path]
 				if !ok {
 					pathItemObject = openapiPathItemObject{}
@@ -1452,6 +1497,10 @@ func renderServices(services []*descriptor.Service, paths openapiPathsObject, re
 					pathItemObject.Put = operationObject
 				case "PATCH":
 					pathItemObject.Patch = operationObject
+				case "HEAD":
+					pathItemObject.Head = operationObject
+				case "OPTIONS":
+					pathItemObject.Options = operationObject
 				}
 				paths[path] = pathItemObject
 			}
@@ -1482,8 +1531,12 @@ func operationForMethod(httpMethod string) func(*openapiPathItemObject) *openapi
 		return func(obj *openapiPathItemObject) *openapiOperationObject { return obj.Delete }
 	case "PATCH":
 		return func(obj *openapiPathItemObject) *openapiOperationObject { return obj.Patch }
+	case "HEAD":
+		return func(obj *openapiPathItemObject) *openapiOperationObject { return obj.Head }
+	case "OPTIONS":
+		return func(obj *openapiPathItemObject) *openapiOperationObject { return obj.Options }
 	default:
-		return nil
+		return func(obj *openapiPathItemObject) *openapiOperationObject { return nil }
 	}
 }
 
@@ -2490,37 +2543,63 @@ func updateswaggerObjectFromJSONSchema(s *openapiSchemaObject, j *openapi_option
 		s.Title = goTemplateComments(s.Title, data, reg)
 		s.Description = goTemplateComments(s.Description, data, reg)
 	}
-
-	s.ReadOnly = j.GetReadOnly()
-	s.MultipleOf = j.GetMultipleOf()
-	s.Maximum = j.GetMaximum()
-	s.ExclusiveMaximum = j.GetExclusiveMaximum()
-	s.Minimum = j.GetMinimum()
-	s.ExclusiveMinimum = j.GetExclusiveMinimum()
-	s.MaxLength = j.GetMaxLength()
-	s.MinLength = j.GetMinLength()
-	s.Pattern = j.GetPattern()
-	s.Default = j.GetDefault()
+	if s.Type == "array" {
+		s.Items.MaxLength = j.GetMaxLength()
+		s.Items.MinLength = j.GetMinLength()
+		s.Items.Pattern = j.GetPattern()
+		s.Items.Default = j.GetDefault()
+		s.Items.UniqueItems = j.GetUniqueItems()
+		s.Items.MaxProperties = j.GetMaxProperties()
+		s.Items.MinProperties = j.GetMinProperties()
+		s.Items.Required = j.GetRequired()
+		s.Items.Minimum = j.GetMinimum()
+		s.Items.Maximum = j.GetMaximum()
+		s.Items.ReadOnly = j.GetReadOnly()
+		s.Items.MultipleOf = j.GetMultipleOf()
+		s.Items.ExclusiveMaximum = j.GetExclusiveMaximum()
+		s.Items.ExclusiveMinimum = j.GetExclusiveMinimum()
+		s.Items.Enum = j.GetEnum()
+	} else {
+		s.MaxLength = j.GetMaxLength()
+		s.MinLength = j.GetMinLength()
+		s.Pattern = j.GetPattern()
+		s.Default = j.GetDefault()
+		s.UniqueItems = j.GetUniqueItems()
+		s.MaxProperties = j.GetMaxProperties()
+		s.MinProperties = j.GetMinProperties()
+		s.Required = j.GetRequired()
+		s.Minimum = j.GetMinimum()
+		s.Maximum = j.GetMaximum()
+		s.ReadOnly = j.GetReadOnly()
+		s.MultipleOf = j.GetMultipleOf()
+		s.ExclusiveMaximum = j.GetExclusiveMaximum()
+		s.ExclusiveMinimum = j.GetExclusiveMinimum()
+		s.Enum = j.GetEnum()
+	}
 	s.MaxItems = j.GetMaxItems()
 	s.MinItems = j.GetMinItems()
-	s.UniqueItems = j.GetUniqueItems()
-	s.MaxProperties = j.GetMaxProperties()
-	s.MinProperties = j.GetMinProperties()
-	s.Required = j.GetRequired()
+
 	if reg.GetUseJSONNamesForFields() {
 		for i, r := range s.Required {
 			// TODO(oyvindwe): Look up field and use field.GetJsonName()?
-			s.Required[i] = doCamelCase(r)
+			s.Required[i] = casing.JSONCamelCase(r)
 		}
 	}
 	s.Enum = j.GetEnum()
+	if j.GetExtensions() != nil {
+		exts, err := processExtensions(j.GetExtensions())
+		if err != nil {
+			panic(err)
+		}
+		s.extensions = exts
+	}
 	if overrideType := j.GetType(); len(overrideType) > 0 {
 		s.Type = strings.ToLower(overrideType[0].String())
 	}
-	if j != nil && j.GetExample() != "" {
+	if j.GetExample() != "" {
 		s.Example = RawExample(j.GetExample())
 	}
-	if j != nil && j.GetFormat() != "" {
+	if j.GetFormat() != "" {
 		s.Format = j.GetFormat()
 	}
 }
@@ -2694,7 +2773,7 @@ func lowerCamelCase(fieldName string, fields []*descriptor.Field, msgs []*descri
 		fieldNames := strings.Split(fieldName, ".")
 		fieldNamesWithCamelCase := make([]string, 0)
 		for i := 0; i < len(fieldNames)-1; i++ {
-			fieldNamesWithCamelCase = append(fieldNamesWithCamelCase, doCamelCase(string(fieldNames[i])))
+			fieldNamesWithCamelCase = append(fieldNamesWithCamelCase, casing.JSONCamelCase(string(fieldNames[i])))
 		}
 		prefix := strings.Join(fieldNamesWithCamelCase, ".")
 		reservedJSONName := getReservedJSONName(fieldName, messageNameToFieldsToJSONName, fieldNameToType)
@@ -2702,15 +2781,7 @@ func lowerCamelCase(fieldName string, fields []*descriptor.Field, msgs []*descri
 			return prefix + "." + reservedJSONName
 		}
 	}
-	return doCamelCase(fieldName)
-}
-
-func doCamelCase(input string) string {
-	parameterString := casing.Camel(input)
-	builder := &strings.Builder{}
-	builder.WriteString(strings.ToLower(string(parameterString[0])))
-	builder.WriteString(parameterString[1:])
-	return builder.String()
+	return casing.JSONCamelCase(fieldName)
 }
 
 func getReservedJSONName(fieldName string, messageNameToFieldsToJSONName map[string]map[string]string, fieldNameToType map[string]string) string {
@@ -2751,4 +2822,11 @@ func subPathParams(paramName string, outerParams []descriptor.Parameter) []descr
 		}
 	}
 	return innerParams
+}
+
+func getFieldConfiguration(reg *descriptor.Registry, fd *descriptor.Field) *openapi_options.JSONSchema_FieldConfiguration {
+	if j, err := getFieldOpenAPIOption(reg, fd); err == nil {
+		return j.GetFieldConfiguration()
+	}
+	return nil
 }

@@ -8,6 +8,8 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/codegenerator"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor/openapiconfig"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	"google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -45,9 +47,6 @@ type Registry struct {
 
 	// mergeFileName target OpenAPI file name after merge
 	mergeFileName string
-
-	// allowRepeatedFieldsInBody permits repeated field in body field path of `google.api.http` annotation option
-	allowRepeatedFieldsInBody bool
 
 	// includePackageInTags controls whether the package name defined in the `package` directive
 	// in the proto file can be prepended to the gRPC service name in the `Tags` field of every operation.
@@ -210,7 +209,7 @@ func (r *Registry) loadFile(filePath string, file *protogen.File) {
 		Name: string(file.GoPackageName),
 	}
 	if r.standalone {
-		pkg.Alias = "ext" + strings.Title(pkg.Name)
+		pkg.Alias = "ext" + cases.Title(language.AmericanEnglish).String(pkg.Name)
 	}
 
 	if err := r.ReserveGoPackageAlias(pkg.Name, pkg.Path); err != nil {
@@ -447,18 +446,6 @@ func (r *Registry) IsAllowMerge() bool {
 // SetMergeFileName controls the target OpenAPI file name out of multiple protos
 func (r *Registry) SetMergeFileName(mergeFileName string) {
 	r.mergeFileName = mergeFileName
-}
-
-// SetAllowRepeatedFieldsInBody controls whether repeated field can be used
-// in `body` and `response_body` (`google.api.http` annotation option) field path or not
-func (r *Registry) SetAllowRepeatedFieldsInBody(allow bool) {
-	r.allowRepeatedFieldsInBody = allow
-}
-
-// IsAllowRepeatedFieldsInBody checks if repeated field can be used
-// in `body` and `response_body` (`google.api.http` annotation option) field path or not
-func (r *Registry) IsAllowRepeatedFieldsInBody() bool {
-	return r.allowRepeatedFieldsInBody
 }
 
 // SetIncludePackageInTags controls whether the package name defined in the `package` directive
